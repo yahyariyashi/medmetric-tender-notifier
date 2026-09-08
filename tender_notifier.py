@@ -982,20 +982,34 @@ def scrape_egp(candidates: list):
                         if not is_relevant_tender(title_text):
                             continue
 
-                        # Skip expired / past deadlines (API returns historical tenders too)
-                        deadline = item.get("submissionDeadline") or ""
+                        # Only alert on tenders that are still open for submission.
+                        # The public API returns years of historical rows; without this
+                        # filter, WhatsApp links often land on closed/expired packages.
+                        is_submittable = bool(item.get("isSubmittable"))
+                        deadline = (
+                            item.get("submissionDeadline")
+                            or (item.get("packageInformation") or {}).get("submission_deadline")
+                            or ""
+                        )
+                        deadline_ok = False
                         if deadline:
                             try:
-                                # e.g. 2025-04-30T14:30:00+03:00
-                                dl = datetime.fromisoformat(deadline.replace("Z", "+00:00"))
+                                dl = datetime.fromisoformat(str(deadline).replace("Z", "+00:00"))
                                 now = datetime.now(timezone.utc)
                                 if dl.tzinfo is None:
-                                    # assume Africa/Addis_Ababa (+03) if naive
                                     dl = dl.replace(tzinfo=timezone(timedelta(hours=3)))
-                                if dl < now:
-                                    continue  # closed — do not alert
+                                # require at least ~1 hour remaining
+                                deadline_ok = dl > now + timedelta(hours=1)
                             except Exception:
-                                pass  # if unparseable, keep and let AI/user decide
+                                deadline_ok = False
+
+                        if not is_submittable and not deadline_ok:
+                            continue
+                        if deadline and not deadline_ok:
+                            continue  # known past deadline
+                        if not is_submittable:
+                            # no usable deadline either — skip closed rows
+                            continue
 
                         tender_id = f"egp_{ref_no or item.get('id') or title_text}"
                         if is_already_notified(tender_id):
@@ -1006,9 +1020,9 @@ def scrape_egp(candidates: list):
 
                         detail_text = _egp_build_detail_text(item)
 
-                        # Deep-link format used by the SPA (from frontend router):
-                        # /egp/bids/all/{tendering|purchasing|...}/{id}/{open|closed}
-                        # id = sourceId when Purchasing, else lotInPackageId || lotId
+                        # SPA deep-link (from Angular router.navigate):
+                        # /egp/bids/all/{tendering|purchasing|...}/{id}/open
+                        # Purchasing uses sourceId; Tendering uses lotInPackageId || lotId
                         src_app = (item.get("sourceApplication") or "").strip()
                         app_path = {
                             "Tendering": "tendering",
@@ -1017,16 +1031,31 @@ def scrape_egp(candidates: list):
                             "Prequalification": "prequalification",
                         }.get(src_app, "tendering")
                         if src_app == "Purchasing":
-                            detail_id = item.get("sourceId") or item.get("lotInPackageId") or item.get("lotId") or item.get("id") or ""
+                            detail_id = (
+                                item.get("sourceId")
+                                or item.get("lotInPackageId")
+                                or item.get("lotId")
+                                or item.get("id")
+                                or ""
+                            )
                         else:
-                            detail_id = item.get("lotInPackageId") or item.get("lotId") or item.get("id") or ""
-                        open_closed = "open" if item.get("isSubmittable") else "closed"
+                            detail_id = (
+                                item.get("lotInPackageId")
+                                or item.get("lotId")
+                                or item.get("id")
+                                or ""
+                            )
+                        # Only link open packages we already filtered for
                         if detail_id:
-                            detail_link = f"{EGP_BASE}/egp/bids/all/{app_path}/{detail_id}/{open_closed}"
+                            detail_link = f"{EGP_BASE}/egp/bids/all/{app_path}/{detail_id}/open"
                         else:
                             detail_link = f"{EGP_BASE}/egp/bids/all"
 
-                        print(f"📄 eGP candidate: {title_text[:70]} | deadline={deadline}", flush=True)
+                        print(
+                            f"📄 eGP candidate: {title_text[:70]} | deadline={deadline} | "
+                            f"submittable={is_submittable} | link_id={detail_id[:8]}…",
+                            flush=True,
+                        )
 
                         candidates.append({
                             "id": tender_id,
@@ -1035,6 +1064,7 @@ def scrape_egp(candidates: list):
                             "ref_no": ref_no,
                             "detail_text": detail_text[:6000],
                             "link": detail_link,
+                            "deadline": deadline,  # API closing date for WhatsApp fallback
                         })
                     except Exception:
                         continue
@@ -1102,7 +1132,7 @@ def check_for_tenders():
                 reason = "AI batch analysis unavailable — keyword match only"
                 procurement_object = ""
                 constraints = "Unknown — AI unavailable"
-                closing_date = "Unknown — AI unavailable"
+                closing_date = (c.get("deadline") or "").strip() or "Unknown — AI unavailable"
                 ai_verified = False
             elif result is None:
                 # Batch call succeeded but this particular index was missing
@@ -1112,7 +1142,7 @@ def check_for_tenders():
                 reason = "Missing from AI batch response — keyword match only"
                 procurement_object = ""
                 constraints = "Unknown — AI unavailable"
-                closing_date = "Unknown — AI unavailable"
+                closing_date = (c.get("deadline") or "").strip() or "Unknown — AI unavailable"
                 ai_verified = False
             else:
                 is_relevant = bool(result.get("relevant", True))
@@ -1126,6 +1156,18 @@ def check_for_tenders():
                 constraints = result.get("constraints") or "Not stated in provided text"
                 closing_date = result.get("closing_date") or "Not stated in provided text"
                 ai_verified = True
+
+            # Prefer real API deadline when AI left it unknown / not stated
+            api_deadline = (c.get("deadline") or "").strip()
+            if api_deadline and (
+                not closing_date
+                or closing_date in (
+                    "Unknown — AI unavailable",
+                    "Not stated in provided text",
+                    "?",
+                )
+            ):
+                closing_date = api_deadline
 
             if not is_relevant:
                 # Log the AI's actual reasoning, not just the title — makes
