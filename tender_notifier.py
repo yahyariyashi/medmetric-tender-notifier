@@ -199,13 +199,24 @@ def _build_batch_prompt(chunk_with_indices):
     system_instruction = (
         "You are an expert procurement analyst for medMETRIC Healthcare Service PLC, "
         "an Ethiopian biomedical engineering and medical equipment technical-services provider. Their scope "
-        "covers: medical equipment Corrective and preventive maintenance & service contracts (including hemodialysis "
-        "systems like B.Braun Dialog+ and SWS-4000A), RO/water treatment systems, CSSD & "
-        "sterilization equipment (e.g. Rivamed or Aquaboss), corrective and preventive maintenance of "
-        " medical imaging equipment, Procurement of Maintenance and Repair Service, also medmetric participates on International Competitive Bidding (ICB) which is related to medical equipment "
-        "and general medical equipment supply/consultancy. They do NOT supply medicines, must check since they don't work on "
+        "covers ALL of the following as EQUALLY relevant — do not treat maintenance/service as the deciding "
+        "factor or require it to be present:\n"
+        "1) Medical equipment corrective and preventive maintenance & service contracts (including hemodialysis "
+        "systems like B.Braun Dialog+ and SWS-4000A), RO/water treatment systems, CSSD & sterilization equipment "
+        "(e.g. Rivamed or Aquaboss), and maintenance of medical imaging equipment.\n"
+        "2) Straight supply/procurement of medical equipment with NO maintenance component attached — including "
+        "International Competitive Bidding (ICB) for medical equipment and general medical equipment supply. "
+        "A tender that is ONLY 'procurement/supply of medical equipment' with no service attached IS relevant — "
+        "do NOT reject it just because it lacks a maintenance or service component.\n"
+        "3) CPD training, coaching, workshops, or consultancy services related to medical equipment or biomedical "
+        "engineering — e.g. medical device maintenance training for hospital technicians, biomedical workshop "
+        "organization, technical consultancy on medical equipment. These count as relevant even though they are "
+        "not equipment supply or a maintenance contract.\n"
+        "They do NOT supply medicines, must check since they don't work on "
         "pharmaceuticals, vaccines, or laboratory-only equipment/reagents/consumables — mark "
-        "those NOT relevant even if they mention \"medical\" in passing.\n\n"
+        "those NOT relevant even if they mention \"medical\" in passing. Generic non-technical services (e.g. "
+        "environmental/social impact assessments, civil works, furniture, IT) remain NOT relevant even if the "
+        "underlying project involves a hospital.\n\n"
         "You will be given a numbered list of tenders, each with a Detail excerpt taken from the tender's "
         "own detail page (it may include a front section plus separate windows of text pulled from around "
         "date/eligibility keywords elsewhere on the page, joined by [...] markers — treat each window as "
@@ -1005,6 +1016,18 @@ def scrape_egp(candidates: list):
                                 deadline_ok = dl > now + timedelta(hours=1)
                             except Exception:
                                 deadline_ok = False
+
+                        # DEBUG: this item cleared the keyword filter — log exactly
+                        # why it's kept or dropped, so a suspiciously-empty scan can
+                        # be diagnosed (genuinely-closed tenders vs. a filter bug)
+                        # instead of guessed at. Set EGP_DEBUG=0 to silence this.
+                        if os.environ.get("EGP_DEBUG", "1").strip().lower() not in ("0", "false", "no"):
+                            print(
+                                f"🔬 eGP kw-match: {title_text[:70]} | ref={ref_no or item.get('id')} | "
+                                f"isSubmittable={is_submittable} | deadline={deadline or '(none)'} | "
+                                f"deadline_ok={deadline_ok}",
+                                flush=True,
+                            )
 
                         if not is_submittable and not deadline_ok:
                             continue
