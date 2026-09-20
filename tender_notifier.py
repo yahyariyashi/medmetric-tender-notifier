@@ -952,34 +952,59 @@ def run_egp_with_timeout(candidates: list, timeout_seconds: int = 600) -> int:
 # ==================== ENGINE: eGP (API — no browser) ====================
 def scrape_egp(candidates: list):
     """
-    Scrape eGP via the public /po-gw/cms-v2/api/sourcing/get-sourcing API.
+    Scrape eGP via the public /po-gw/cms-v2/api/sourcing/get-grouped-sourcing API.
 
     Playwright is intentionally NOT used here: the site detects CDP/automation
     and redirects every browser session to /egp/inspect-not-allowed. The
     sourcing API is public (no login required) and already returns title,
     reference, closing date, bid security, description, and procuring entity.
+
+    IMPORTANT: this deliberately calls get-grouped-sourcing, NOT get-sourcing.
+    get-sourcing searches the entire ~125,000-tender historical archive (most
+    of it long closed), which is why the old code almost always ended up with
+    0 candidates after the deadline filter below correctly rejected everything
+    as expired. get-grouped-sourcing searches only the ~574 currently-active
+    tenders (matches the site's own "Total Active Tenders" count), so results
+    here should actually be open. It also groups tenders by procurement
+    package — each item has a nested result[] list (usually 1 entry, but a
+    package can have multiple lots) — so we flatten that below.
     """
     print(f"[{datetime.now()}] 🔍 Running eGP Engine (API)...", flush=True)
     found = 0
     seen_this_scan = set()
 
-    # How many results to pull per search term
+    # How many packages to pull per search term
     TOP_PER_TERM = int(os.environ.get("EGP_TOP_PER_TERM", "25"))
 
     try:
         for term in EGP_SEARCH_TERMS:
             try:
-                # API supports ?search= and ?top=
                 from urllib.parse import quote
                 q = quote(term)
-                data = _egp_api_get(f"/cms-v2/api/sourcing/get-sourcing?search={q}&top={TOP_PER_TERM}")
+                url = (
+                    "/cms-v2/api/sourcing/get-grouped-sourcing"
+                    f"?type=all&skip=0&top={TOP_PER_TERM}&locale=en&search={q}"
+                    "&searchFrom%5B0%5D=lotName"
+                    "&searchFrom%5B1%5D=sourceApplication"
+                    "&searchFrom%5B2%5D=lotReferenceNo"
+                    "&searchFrom%5B3%5D=procurementReferenceNo"
+                    "&orderBy%5B0%5D.field=invitationDate"
+                    "&orderBy%5B0%5D.direction=desc"
+                )
+                data = _egp_api_get(url)
                 if not data or "items" not in data:
                     print(f"eGP search '{term}': no data", flush=True)
                     continue
 
-                items = data.get("items") or []
-                total = data.get("total", len(items))
-                print(f"eGP search '{term}': {len(items)} items (total matching ~{total})", flush=True)
+                packages = data.get("items") or []
+                total = data.get("total", len(packages))
+                # Flatten package -> result[] into a plain list of tender items,
+                # same shape the rest of this function already expects.
+                items = []
+                for pkg in packages:
+                    for lot in (pkg.get("result") or []):
+                        items.append(lot)
+                print(f"eGP search '{term}': {len(items)} items across {len(packages)} packages (total matching ~{total})", flush=True)
 
                 for item in items:
                     try:
@@ -1326,3 +1351,4 @@ if __name__ == "__main__":
     threading.Thread(target=monitoring_loop, daemon=True).start()
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
+
