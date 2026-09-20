@@ -803,7 +803,10 @@ def _process_merkato_links(links, context, candidates: list, seen_this_scan: set
                         mark_as_notified(tender_id)
                         continue
 
-                    mark_as_notified(tender_id)
+                    # NOTE: do NOT mark_as_notified() here — same reasoning as
+                    # the eGP engine. This candidate hasn't been AI-reviewed or
+                    # sent yet; marking it now would permanently bury it if the
+                    # AI batch fails or genuinely (but wrongly) rejects it.
                     found += 1
 
                     detail_text = ""
@@ -1015,7 +1018,12 @@ def scrape_egp(candidates: list):
                         if is_already_notified(tender_id):
                             continue
 
-                        mark_as_notified(tender_id)
+                        # NOTE: do NOT mark_as_notified() here. Marking happens
+                        # only after the tender is actually resolved — either
+                        # genuinely rejected by the AI or actually sent via
+                        # WhatsApp — back in check_for_tenders(). Marking this
+                        # early meant a transient AI/batch failure permanently
+                        # buried a candidate that was never shown to anyone.
                         found += 1
 
                         detail_text = _egp_build_detail_text(item)
@@ -1175,6 +1183,10 @@ def check_for_tenders():
                 # title that LOOKED relevant) without digging through the
                 # WhatsApp thread for context that was never sent there
                 print(f"🤖 AI rejected as not relevant, skipping alert: {c['title']} — reason: {reason or '(no reason returned)'}", flush=True)
+                # This is a genuine, AI-verified rejection (not a transient
+                # failure — those keep is_relevant forced True above), so it's
+                # safe to permanently mark it and never re-surface it.
+                mark_as_notified(c["id"])
                 continue
 
             # When AI fails for an item, still alert if the title has a STRONG
@@ -1233,6 +1245,9 @@ def check_for_tenders():
             alert = "\n".join(lines)
             send_whatsapp(alert)
             total_sent += 1
+            # Only now — after the alert has actually gone out — is it safe
+            # to permanently mark this tender as notified.
+            mark_as_notified(c["id"])
             time.sleep(2)
 
     total = total_sent
